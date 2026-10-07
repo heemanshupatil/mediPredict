@@ -50,3 +50,23 @@ data/history.db
 # OS
 .DS_Store
 Thumbs.db
+
+# Deployment artifacts
+.vercel/
+.netlify/
+Dockerfile
+railway.json
+railway.toml
+backend/vercel.json
+backend/.gitignore
+backend/dataset/
+
+# Deployment artifacts
+.vercel/
+.netlify/
+Dockerfile
+railway.json
+railway.toml
+backend/vercel.json
+backend/.gitignore
+backend/dataset/

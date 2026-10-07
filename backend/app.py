@@ -24,7 +24,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATASET_PATH = os.path.join(BASE_DIR, "..", "dataset", "insurance.csv")
+# Dataset lives next to the app (backend/dataset/insurance.csv) so it works
+# both locally (../dataset) and on Vercel (./dataset).
+DATASET_PATH = os.environ.get(
+    "DATASET_PATH",
+    os.path.join(BASE_DIR, "dataset", "insurance.csv"),
+)
 DB_PATH = os.path.join(BASE_DIR, "data", "history.db")
 
 # ──────────────────────────────────────────────
@@ -39,13 +44,18 @@ stats_service = StatsService(dataset_service)
 # SQLite helpers
 # ──────────────────────────────────────────────
 def get_db():
+    # Vercel's filesystem is read-only; fall back to /tmp for the SQLite file.
+    global DB_PATH
+    db_dir = os.path.dirname(DB_PATH)
+    if not os.access(db_dir, os.W_OK):
+        DB_PATH = os.path.join("/tmp", "history.db")
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def init_db():
+def _ensure_db():
     conn = get_db()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS predictions (
@@ -70,11 +80,13 @@ def init_db():
 # ──────────────────────────────────────────────
 @app.route("/api/health", methods=["GET"])
 def health():
+    _ensure_db()
     return jsonify({"status": "ok", "timestamp": datetime.utcnow().isoformat()})
 
 
 @app.route("/api/dataset", methods=["GET"])
 def get_dataset():
+    _ensure_db()
     try:
         page = int(request.args.get("page", 1))
         per_page = int(request.args.get("per_page", 20))
@@ -137,26 +149,30 @@ def predict():
         model_name = data.get("model", "linear_regression")
         prediction = ml_service.predict(data, model_name)
 
-        # Save to history
-        conn = get_db()
-        conn.execute(
-            """INSERT INTO predictions
-               (timestamp, age, sex, bmi, children, smoker, region, model, predicted_cost)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (
-                datetime.utcnow().isoformat(),
-                int(data["age"]),
-                data["sex"],
-                float(data["bmi"]),
-                int(data["children"]),
-                data["smoker"],
-                data["region"],
-                model_name,
-                prediction["predicted_cost"],
-            ),
-        )
-        conn.commit()
-        conn.close()
+        # Save to history (best-effort; Vercel's filesystem is read-only)
+        _ensure_db()
+        try:
+            conn = get_db()
+            conn.execute(
+                """INSERT INTO predictions
+                   (timestamp, age, sex, bmi, children, smoker, region, model, predicted_cost)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    datetime.utcnow().isoformat(),
+                    int(data["age"]),
+                    data["sex"],
+                    float(data["bmi"]),
+                    int(data["children"]),
+                    data["smoker"],
+                    data["region"],
+                    model_name,
+                    prediction["predicted_cost"],
+                ),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as hist_err:
+            logger.warning("History persistence skipped: %s", hist_err)
 
         return jsonify(prediction)
     except Exception as e:
@@ -187,7 +203,10 @@ def upload_dataset():
         if missing:
             return jsonify({"error": f"Missing required columns: {missing}"}), 422
 
-        save_path = os.path.join(BASE_DIR, "..", "dataset", "insurance.csv")
+        save_path = os.environ.get(
+            "DATASET_PATH",
+            os.path.join(BASE_DIR, "dataset", "insurance.csv"),
+        )
         df.to_csv(save_path, index=False)
 
         # Reload services
@@ -202,6 +221,7 @@ def upload_dataset():
 
 @app.route("/api/history", methods=["GET"])
 def get_history():
+    _ensure_db()
     try:
         conn = get_db()
         rows = conn.execute("SELECT * FROM predictions ORDER BY id DESC").fetchall()

@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-const BASE = '/api';
+// In dev, Vite proxies /api to the local Flask server.
+// On Netlify (or any static host), set VITE_API_URL to your hosted backend, e.g. https://your-backend.example.com/api
+const BASE = import.meta.env.VITE_API_URL || '/api';
 const DIRECT_BACKEND = 'http://127.0.0.1:5000/api';
 
 const api = axios.create({
